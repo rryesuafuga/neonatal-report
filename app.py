@@ -386,10 +386,10 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
     st.markdown(f'<h4 class="report-section">{section_prefix}1. Total Admissions per Month</h4>', unsafe_allow_html=True)
     
     monthly = df.groupby("Admission_Month").size().reset_index(name="Admissions")
-    monthly["Month"] = monthly["Admission_Month"].astype(str)
     monthly = monthly.sort_values("Admission_Month")
+    monthly["Month"] = monthly["Admission_Month"].dt.strftime("%b %Y")
     total_admissions = monthly["Admissions"].sum()
-    
+
     tbl = monthly[["Month", "Admissions"]].copy()
     tbl["% of Total"] = (tbl["Admissions"] / total_admissions * 100).round(1).astype(str) + "%"
     
@@ -927,7 +927,7 @@ def main():
     all_tables = {}
     
     st.markdown('<h2 style="color: #00468B; text-align: center;">Section A — All Admissions</h2>', unsafe_allow_html=True)
-    tables_a, tc = generate_report_section(filtered, section_prefix="A.", table_counter_start=1)
+    tables_a, tc = generate_report_section(filtered, section_prefix="A. ", table_counter_start=1)
     all_tables.update(tables_a)
     
     # ── SECTION B: Deaths only (Item 11) ──
@@ -936,7 +936,7 @@ def main():
         st.markdown('<h2 style="color: #AD002A; text-align: center;">Section B — Deaths Only</h2>', unsafe_allow_html=True)
         deaths_df = filtered[filtered["Died"]].copy()
         st.markdown(f"*Filtered to {len(deaths_df)} neonatal deaths out of {n_records} total admissions.*")
-        tables_b, tc = generate_report_section(deaths_df, section_prefix="B.", table_counter_start=tc)
+        tables_b, tc = generate_report_section(deaths_df, section_prefix="B. ", table_counter_start=tc)
         all_tables.update(tables_b)
     
     # ── SECTION C: Low birth weight sub-reports (Item 12) ──
@@ -945,14 +945,14 @@ def main():
         st.markdown('<h2 style="color: #925E9F; text-align: center;">Section C — Extremely Low Birth Weight (&lt;1000g)</h2>', unsafe_allow_html=True)
         elbw = filtered[filtered["BW_Category"] == "<1000g"].copy()
         st.markdown(f"*Filtered to {len(elbw)} neonates with birth weight <1000g.*")
-        tables_c1, tc = generate_report_section(elbw, section_prefix="C1.", table_counter_start=tc)
+        tables_c1, tc = generate_report_section(elbw, section_prefix="C1. ", table_counter_start=tc)
         all_tables.update(tables_c1)
         
         st.divider()
         st.markdown('<h2 style="color: #925E9F; text-align: center;">Section C — Very Low Birth Weight (1000–1499g)</h2>', unsafe_allow_html=True)
         vlbw = filtered[filtered["BW_Category"] == "1000–1499g"].copy()
         st.markdown(f"*Filtered to {len(vlbw)} neonates with birth weight 1000–1499g.*")
-        tables_c2, tc = generate_report_section(vlbw, section_prefix="C2.", table_counter_start=tc)
+        tables_c2, tc = generate_report_section(vlbw, section_prefix="C2. ", table_counter_start=tc)
         all_tables.update(tables_c2)
     
     # ── Download button ──
