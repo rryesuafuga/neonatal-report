@@ -7,3 +7,6 @@ __pycache__/
 *.tmp
 .vscode/
 .idea/
+
+# Sensitive patient/clinical data
+data/

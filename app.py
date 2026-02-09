@@ -805,12 +805,16 @@ def main():
     df = None
     
     if uploaded_file is not None:
-        try:
-            if file_type == "CSV (.csv)":
+        if file_type == "CSV (.csv)":
+            try:
                 df = pd.read_csv(uploaded_file, encoding="latin-1")
-            else:
-                # Handle password-protected Excel
-                if password:
+            except Exception as e:
+                st.error(f"Error reading CSV file: {str(e)}")
+                return
+        else:
+            # Handle password-protected Excel
+            if password:
+                try:
                     import msoffcrypto
                     decrypted = io.BytesIO()
                     ms_file = msoffcrypto.OfficeFile(uploaded_file)
@@ -818,12 +822,25 @@ def main():
                     ms_file.decrypt(decrypted)
                     decrypted.seek(0)
                     df = pd.read_excel(decrypted, sheet_name="Logbook", engine="openpyxl")
-                else:
+                except Exception as e:
+                    err_name = type(e).__name__
+                    err_msg = str(e).lower()
+                    if "invalidkey" in err_name.lower() or "could not be decrypted" in err_msg:
+                        st.error("Incorrect password. Please check the password and try again.")
+                    else:
+                        st.error(f"Error reading file: {str(e)}")
+                    return
+            else:
+                try:
                     df = pd.read_excel(uploaded_file, sheet_name="Logbook", engine="openpyxl")
-        except Exception as e:
-            st.error(f"Error reading file: {str(e)}")
-            st.info("If the file is password-protected, please enter the password in the sidebar.")
-            return
+                except Exception as e:
+                    err_name = type(e).__name__
+                    err_msg = str(e).lower()
+                    if "zip" in err_msg or "encrypt" in err_msg or "badzipfile" in err_name.lower():
+                        st.error("This file appears to be password-protected. Please enter the spreadsheet password in the sidebar.")
+                    else:
+                        st.error(f"Error reading file: {str(e)}")
+                    return
     else:
         # Demo mode: check for local CSV
         demo_path = os.path.join(os.path.dirname(__file__), "data", "Logbook.csv")
