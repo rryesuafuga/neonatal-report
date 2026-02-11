@@ -625,7 +625,29 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         height=420,
     )
     st.plotly_chart(fig_diag, use_container_width=True)
-    
+
+    # Top 10 diagnoses — mortality rate table
+    top10_names = diag_tbl.head(10)["Final Diagnosis"].tolist()
+    top10_df = df[df["Final Diagnosis"].isin(top10_names)]
+    mort_by_diag = top10_df.groupby("Final Diagnosis").agg(
+        Total=("Died", "size"),
+        Deaths=("Died", "sum"),
+    ).reset_index()
+    mort_by_diag["Mortality (%)"] = (mort_by_diag["Deaths"] / mort_by_diag["Total"] * 100).round(1).astype(str) + "%"
+    mort_by_diag = mort_by_diag.sort_values("Deaths", ascending=False)
+    mort_by_diag.columns = ["Final Diagnosis", "Total (n)", "Deaths (n)", "Mortality (%)"]
+    total_n = mort_by_diag["Total (n)"].sum()
+    total_d = mort_by_diag["Deaths (n)"].sum()
+    total_m = f"{(total_d / total_n * 100):.1f}%" if total_n > 0 else "0.0%"
+    st.markdown(render_lancet_table(
+        mort_by_diag,
+        title=f"{section_prefix}Mortality rate by top 10 diagnoses",
+        footer_row=["Total (Top 10)", str(total_n), str(total_d), total_m],
+        table_num=tc,
+    ), unsafe_allow_html=True)
+    tables_for_export[f"T{tc}_Diagnosis_Mortality"] = mort_by_diag
+    tc += 1
+
     # ── 10. Hospital Outcome ──
     st.markdown(f'<h4 class="report-section">{section_prefix}10. Hospital Outcome (Combined 7-day & 28-day)</h4>', unsafe_allow_html=True)
     
