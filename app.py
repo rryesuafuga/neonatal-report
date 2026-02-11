@@ -375,12 +375,13 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
     """Generate all 10 report sections for a given filtered dataframe."""
     tc = table_counter_start  # table counter
     tables_for_export = {}
-    
+    figures_for_export = {}
+
     n_total = len(df)
-    
+
     if n_total == 0:
         st.warning("No records match the current filter criteria.")
-        return tables_for_export, tc
+        return tables_for_export, tc, figures_for_export
     
     # ── 1. Total admissions per month ──
     st.markdown(f'<h4 class="report-section">{section_prefix}1. Total Admissions per Month</h4>', unsafe_allow_html=True)
@@ -417,7 +418,8 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         yaxis_title="Number of Admissions",
     )
     st.plotly_chart(fig, use_container_width=True)
-    
+    figures_for_export[f"{section_prefix}Monthly_Admissions"] = fig
+
     # ── 2. Place of Birth ──
     st.markdown(f'<h4 class="report-section">{section_prefix}2. Place of Birth</h4>', unsafe_allow_html=True)
     
@@ -460,7 +462,8 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         yaxis_title="",
     )
     st.plotly_chart(fig2, use_container_width=True)
-    
+    figures_for_export[f"{section_prefix}Place_of_Birth"] = fig2
+
     # ── 3. Place of Referral ──
     st.markdown(f'<h4 class="report-section">{section_prefix}3. Place of Referral</h4>', unsafe_allow_html=True)
     
@@ -504,7 +507,8 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
     ))
     fig_hiv = lancet_plotly_layout(fig_hiv, title=f"Figure. {section_prefix}Maternal HIV status", height=380)
     st.plotly_chart(fig_hiv, use_container_width=True)
-    
+    figures_for_export[f"{section_prefix}HIV_Status"] = fig_hiv
+
     # ── 5. Mode of Delivery ──
     st.markdown(f'<h4 class="report-section">{section_prefix}5. Mode of Delivery</h4>', unsafe_allow_html=True)
     
@@ -537,6 +541,7 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         ))
         fig_sex = lancet_plotly_layout(fig_sex, title=f"Figure. {section_prefix}Sex distribution", height=350)
         st.plotly_chart(fig_sex, use_container_width=True)
+        figures_for_export[f"{section_prefix}Sex_Distribution"] = fig_sex
     with col2:
         fig_mod = go.Figure(go.Pie(
             labels=mod_tbl["Mode of Delivery"], values=mod_tbl["n"],
@@ -545,7 +550,8 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         ))
         fig_mod = lancet_plotly_layout(fig_mod, title=f"Figure. {section_prefix}Mode of delivery", height=350)
         st.plotly_chart(fig_mod, use_container_width=True)
-    
+        figures_for_export[f"{section_prefix}Mode_of_Delivery"] = fig_mod
+
     # ── 7. Multiple Births ──
     st.markdown(f'<h4 class="report-section">{section_prefix}7. Multiple Births</h4>', unsafe_allow_html=True)
     
@@ -595,7 +601,8 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         height=400,
     )
     st.plotly_chart(fig_bw, use_container_width=True)
-    
+    figures_for_export[f"{section_prefix}Birth_Weight"] = fig_bw
+
     # ── 9. Final Diagnosis ──
     st.markdown(f'<h4 class="report-section">{section_prefix}9. Final Diagnosis</h4>', unsafe_allow_html=True)
     
@@ -625,6 +632,7 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         height=420,
     )
     st.plotly_chart(fig_diag, use_container_width=True)
+    figures_for_export[f"{section_prefix}Top10_Diagnoses"] = fig_diag
 
     # Top 10 diagnoses — mortality rate table
     top10_names = diag_tbl.head(10)["Final Diagnosis"].tolist()
@@ -695,7 +703,8 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
     ))
     fig_out = lancet_plotly_layout(fig_out, title=f"Figure. {section_prefix}Hospital outcome", height=400)
     st.plotly_chart(fig_out, use_container_width=True)
-    
+    figures_for_export[f"{section_prefix}Hospital_Outcome"] = fig_out
+
     # Monthly mortality trend
     if df["Died"].any():
         monthly_deaths = df.groupby("Admission_Month").agg(
@@ -732,8 +741,9 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         fig_mort.update_yaxes(title_text="Number of Deaths", secondary_y=False)
         fig_mort.update_yaxes(title_text="Mortality Rate (%)", secondary_y=True)
         st.plotly_chart(fig_mort, use_container_width=True)
-    
-    return tables_for_export, tc
+        figures_for_export[f"{section_prefix}Mortality_Trend"] = fig_mort
+
+    return tables_for_export, tc, figures_for_export
 
 
 def generate_excel_report(all_tables):
@@ -777,6 +787,20 @@ def generate_excel_report(all_tables):
     
     output.seek(0)
     return output
+
+
+def generate_figures_zip(all_figures):
+    """Export all Plotly figures as PNG images inside a zip archive."""
+    import zipfile
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, fig in all_figures.items():
+            # Clean filename: remove trailing spaces from section prefix
+            clean_name = name.strip().replace(" ", "_").replace(".", "")
+            png_bytes = fig.to_image(format="png", width=1200, height=600, scale=2)
+            zf.writestr(f"{clean_name}.png", png_bytes)
+    zip_buffer.seek(0)
+    return zip_buffer
 
 
 # ──────────────────────────────────────────────────────────────
@@ -947,19 +971,22 @@ def main():
     
     # ── SECTION A: All admissions ──
     all_tables = {}
-    
+    all_figures = {}
+
     st.markdown('<h2 style="color: #00468B; text-align: center;">Section A — All Admissions</h2>', unsafe_allow_html=True)
-    tables_a, tc = generate_report_section(filtered, section_prefix="A. ", table_counter_start=1)
+    tables_a, tc, figs_a = generate_report_section(filtered, section_prefix="A. ", table_counter_start=1)
     all_tables.update(tables_a)
-    
+    all_figures.update(figs_a)
+
     # ── SECTION B: Deaths only (Item 11) ──
     if show_deaths_only:
         st.divider()
         st.markdown('<h2 style="color: #AD002A; text-align: center;">Section B — Deaths Only</h2>', unsafe_allow_html=True)
         deaths_df = filtered[filtered["Died"]].copy()
         st.markdown(f"*Filtered to {len(deaths_df)} neonatal deaths out of {n_records} total admissions.*")
-        tables_b, tc = generate_report_section(deaths_df, section_prefix="B. ", table_counter_start=tc)
+        tables_b, tc, figs_b = generate_report_section(deaths_df, section_prefix="B. ", table_counter_start=tc)
         all_tables.update(tables_b)
+        all_figures.update(figs_b)
     
     # ── SECTION C: Low birth weight sub-reports (Item 12) ──
     if show_lbw:
@@ -967,28 +994,41 @@ def main():
         st.markdown('<h2 style="color: #925E9F; text-align: center;">Section C — Extremely Low Birth Weight (&lt;1000g)</h2>', unsafe_allow_html=True)
         elbw = filtered[filtered["BW_Category"] == "<1000g"].copy()
         st.markdown(f"*Filtered to {len(elbw)} neonates with birth weight <1000g.*")
-        tables_c1, tc = generate_report_section(elbw, section_prefix="C1. ", table_counter_start=tc)
+        tables_c1, tc, figs_c1 = generate_report_section(elbw, section_prefix="C1. ", table_counter_start=tc)
         all_tables.update(tables_c1)
-        
+        all_figures.update(figs_c1)
+
         st.divider()
         st.markdown('<h2 style="color: #925E9F; text-align: center;">Section C — Very Low Birth Weight (1000–1499g)</h2>', unsafe_allow_html=True)
         vlbw = filtered[filtered["BW_Category"] == "1000–1499g"].copy()
         st.markdown(f"*Filtered to {len(vlbw)} neonates with birth weight 1000–1499g.*")
-        tables_c2, tc = generate_report_section(vlbw, section_prefix="C2. ", table_counter_start=tc)
+        tables_c2, tc, figs_c2 = generate_report_section(vlbw, section_prefix="C2. ", table_counter_start=tc)
         all_tables.update(tables_c2)
+        all_figures.update(figs_c2)
     
     # ── Download button ──
     st.divider()
     st.markdown('<h3 style="color: #00468B;">📥 Download Full Report</h3>', unsafe_allow_html=True)
     
-    excel_data = generate_excel_report(all_tables)
-    st.download_button(
-        label="⬇️  Download Excel Report",
-        data=excel_data,
-        file_name=f"Neonatal_Report_{'_'.join(selected_months) if len(selected_months) <= 3 else 'cumulative'}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    
+    dl_col1, dl_col2 = st.columns(2)
+    with dl_col1:
+        excel_data = generate_excel_report(all_tables)
+        st.download_button(
+            label="⬇️  Download Excel Report",
+            data=excel_data,
+            file_name=f"Neonatal_Report_{'_'.join(selected_months) if len(selected_months) <= 3 else 'cumulative'}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    with dl_col2:
+        if all_figures:
+            zip_data = generate_figures_zip(all_figures)
+            st.download_button(
+                label="⬇️  Download All Graphs (ZIP)",
+                data=zip_data,
+                file_name=f"Neonatal_Graphs_{'_'.join(selected_months) if len(selected_months) <= 3 else 'cumulative'}.zip",
+                mime="application/zip",
+            )
+
     # ── Footer ──
     st.divider()
     st.markdown("""
