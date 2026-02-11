@@ -9,4 +9,6 @@ __pycache__/
 .idea/
 
 # Sensitive patient/clinical data
-data/
+data/*.xlsx
+
+# Allow synthetic demo CSV (tracked via git add -f)
