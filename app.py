@@ -634,22 +634,23 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
     st.plotly_chart(fig_diag, use_container_width=True)
     figures_for_export[f"{section_prefix}Top10_Diagnoses"] = fig_diag
 
-    # Top 10 diagnoses — mortality rate table
+    # Top 10 diagnoses — mortality rate table (excluding unknown outcomes)
     top10_names = diag_tbl.head(10)["Final Diagnosis"].tolist()
     top10_df = df[df["Final Diagnosis"].isin(top10_names)]
+    top10_df = top10_df[top10_df["Combined_Outcome"] != "Unknown"]
     mort_by_diag = top10_df.groupby("Final Diagnosis").agg(
         Total=("Died", "size"),
         Deaths=("Died", "sum"),
     ).reset_index()
     mort_by_diag["Mortality (%)"] = (mort_by_diag["Deaths"] / mort_by_diag["Total"] * 100).round(1).astype(str) + "%"
     mort_by_diag = mort_by_diag.sort_values("Deaths", ascending=False)
-    mort_by_diag.columns = ["Final Diagnosis", "Total (n)", "Deaths (n)", "Mortality (%)"]
-    total_n = mort_by_diag["Total (n)"].sum()
+    mort_by_diag.columns = ["Final Diagnosis", "Total with Known Outcome (n)", "Deaths (n)", "Mortality (%)"]
+    total_n = mort_by_diag["Total with Known Outcome (n)"].sum()
     total_d = mort_by_diag["Deaths (n)"].sum()
     total_m = f"{(total_d / total_n * 100):.1f}%" if total_n > 0 else "0.0%"
     st.markdown(render_lancet_table(
         mort_by_diag,
-        title=f"{section_prefix}Mortality rate by top 10 diagnoses",
+        title=f"{section_prefix}Mortality rate by top 10 diagnoses (patients with known outcome only)",
         footer_row=["Total (Top 10)", str(total_n), str(total_d), total_m],
         table_num=tc,
     ), unsafe_allow_html=True)
