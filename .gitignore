@@ -8,7 +8,9 @@ __pycache__/
 .vscode/
 .idea/
 
-# Sensitive patient/clinical data
+# Sensitive patient/clinical data — NEVER commit real data
 data/*.xlsx
+data/real_*.csv
+data/Validation List.csv
 
 # Allow synthetic demo CSV (tracked via git add -f)

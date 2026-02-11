@@ -1,298 +1,403 @@
 """
-Generate synthetic neonatal logbook data preserving the statistical
-properties of the real Mbale RRH dataset without any real patient information.
+Gaussian Copula-based synthetic neonatal data generator.
 
-This script produces a demo Logbook.csv with ~2000 rows that mirrors:
-- Monthly admission volumes
-- Birth weight distributions (bimodal: preterm + normal)
-- Diagnosis frequencies and their correlation with birth weight
-- Outcome rates by diagnosis
-- Facility level distributions
-- Demographic distributions (sex, HIV status, delivery mode, etc.)
+Uses the copulas library (GaussianMultivariate) to learn the full joint
+distribution from the real Mbale RRH neonatal logbook data, preserving:
+  - Marginal distributions of every variable
+  - Inter-variable correlations (diagnosis↔birth weight, diagnosis↔outcome, etc.)
+  - Realistic missing-data patterns
+
+Methodology:
+  Rubin (1993) framework for synthetic data generation.  The Gaussian copula
+  captures the dependence structure while allowing each marginal to retain
+  its empirical distribution.  Categorical variables are integer-encoded,
+  modelled jointly, then decoded back via nearest-valid-code rounding.
+
+References:
+  - Rubin, D.B. (1993). Statistical Disclosure Limitation. J. Official Statistics.
+  - Patki et al. (2016). The Synthetic Data Vault. IEEE DSAA.
+  - copulas library: https://github.com/sdv-dev/Copulas
+
+Usage:
+  1. Place the real (unencrypted) Logbook.csv in data/real_Logbook.csv
+  2. Run: python generate_synthetic_data.py
+  3. Output: data/Logbook.csv (synthetic, safe to commit)
+
+The real data file is never committed (excluded by .gitignore).
 """
 
 import pandas as pd
 import numpy as np
+from copulas.multivariate import GaussianMultivariate
 from datetime import datetime, timedelta
+import warnings
+import sys
+import os
 
+warnings.filterwarnings("ignore")
 np.random.seed(42)
 
-N_RECORDS = 2000
-N_SKELETON = 310  # ~15.5% empty rows
-N_COMPLETE = N_RECORDS - N_SKELETON
+# ── Configuration ──
+N_SYNTHETIC = 2000
+REAL_DATA_PATH = "data/real_Logbook.csv"
+OUTPUT_PATH = "data/Logbook.csv"
 
-# ── Synthetic facility names ──
-FACILITIES_RRH = ["Mbale RRH"]
-FACILITIES_GH = ["Tororo G.H", "Pallisa G.H", "Iganga G.H"]
-FACILITIES_DH = ["Budaka D.H", "Sironko D.H", "Manafwa D.H"]
-FACILITIES_HCIV = [
-    "Namatala HCIV", "Busiu HCIV", "Bufumbo HCIV", "Budaka HCIV",
-    "Budadiri HCIV", "Lwala HCIV", "Busolwe HCIV", "Kumi HCIV",
-]
-FACILITIES_HCIII = [
-    "Namanyonyi HCIII", "Bukonde HCIII", "Bukhalu HCIII", "Nabiganda HCIII",
-    "Buyobo HCIII", "Magale HCIII", "Nampanga HCIII", "Buwagogo HCIII",
-    "Bukigai HCIII", "Nakaloke HCIII", "Busano HCIII", "Lwasso HCIII",
-]
-FACILITIES_HCII = ["Busamaga HCII", "Namakwekwe HCII", "Bunghokho HCII"]
-FACILITIES_OTHER = ["BBA", "Home"]
-ALL_FACILITIES = (
-    FACILITIES_RRH * 40 + FACILITIES_GH * 4 + FACILITIES_DH * 3 +
-    FACILITIES_HCIV * 8 + FACILITIES_HCIII * 4 + FACILITIES_HCII * 1 +
-    FACILITIES_OTHER * 4
-)
 
-# ── Districts ──
-DISTRICTS = {
-    "Mbale": 0.447, "Sironko": 0.064, "Bukedea": 0.053, "Budaka": 0.045,
-    "Manafwa": 0.028, "Tororo": 0.026, "Bulambuli": 0.023,
-    "Namisindwa": 0.021, "Butebo": 0.020, "Kibuku": 0.020,
-    "Pallisa": 0.020, "Bududa": 0.015, "Butaleja": 0.015,
-    "Busia": 0.009, "Kapchorwa": 0.007,
-}
-# Normalize and add "Other"
-total_p = sum(DISTRICTS.values())
-DISTRICTS["Other District"] = 1.0 - total_p
-district_names = list(DISTRICTS.keys())
-district_probs = list(DISTRICTS.values())
+# ══════════════════════════════════════════════════════════════
+# STEP 1: Load and clean real data
+# ══════════════════════════════════════════════════════════════
 
-# ── Synthetic village names ──
-VILLAGES = [
-    "Nakaloke", "Namakwekwe", "Busamaga", "Malukhu", "Nabumali",
-    "Nkoma", "Wanale", "Bugema", "Industrial", "Bukhaweka",
-    "Bumasifwa", "Busoba", "Bunghokho", "Lukhonge", "Namabasa",
-    "Namagumba", "Bukasakya", "Bukonde", "Lwangoli", "Simu",
-]
+def load_and_clean(path):
+    """Load real data and standardise inconsistent values."""
+    df = pd.read_csv(path, encoding="latin-1")
+    print(f"Loaded {len(df)} real records from {path}")
 
-# ── Diagnoses with birth-weight and mortality parameters ──
-DIAGNOSES = {
-    "Bacterial Sepsis of newborn, unspecified": {
-        "freq": 0.250, "bw_mean": 2.84, "bw_std": 0.66, "mortality_7d": 0.115, "mortality_28d": 0.08,
-    },
-    "Preterm - other (28 - <37 weeks)": {
-        "freq": 0.225, "bw_mean": 1.87, "bw_std": 0.34, "mortality_7d": 0.223, "mortality_28d": 0.12,
-    },
-    "Other": {
-        "freq": 0.185, "bw_mean": 2.70, "bw_std": 0.80, "mortality_7d": 0.100, "mortality_28d": 0.06,
-    },
-    "Preterm - extreme ( Less than 28 weeks by Ballard)": {
-        "freq": 0.150, "bw_mean": 1.27, "bw_std": 0.74, "mortality_7d": 0.639, "mortality_28d": 0.30,
-    },
-    "Hypoxic ischemic encephalopathy [HIE], unspecified": {
-        "freq": 0.069, "bw_mean": 3.10, "bw_std": 0.56, "mortality_7d": 0.435, "mortality_28d": 0.15,
-    },
-    "Neonatal Jaundice, unspecified": {
-        "freq": 0.027, "bw_mean": 2.87, "bw_std": 0.61, "mortality_7d": 0.227, "mortality_28d": 0.10,
-    },
-    "Meconium aspiration syndrome": {
-        "freq": 0.021, "bw_mean": 3.16, "bw_std": 0.46, "mortality_7d": 0.125, "mortality_28d": 0.08,
-    },
-    "Well baby": {
-        "freq": 0.020, "bw_mean": 3.06, "bw_std": 0.80, "mortality_7d": 0.0, "mortality_28d": 0.0,
-    },
-    "Respiratory distress syndrome (RDS)": {
-        "freq": 0.020, "bw_mean": 2.66, "bw_std": 0.81, "mortality_7d": 0.385, "mortality_28d": 0.15,
-    },
-    "Meningitis unspecified": {
-        "freq": 0.010, "bw_mean": 3.06, "bw_std": 0.46, "mortality_7d": 0.500, "mortality_28d": 0.15,
-    },
-    "Gastroschisis": {
-        "freq": 0.009, "bw_mean": 2.11, "bw_std": 0.49, "mortality_7d": 0.400, "mortality_28d": 0.20,
-    },
-    "Low birth weight - Other (1000g - 2499g)": {
-        "freq": 0.007, "bw_mean": 1.93, "bw_std": 0.46, "mortality_7d": 0.150, "mortality_28d": 0.10,
-    },
-    "Hydrocephalus, unspecified": {
-        "freq": 0.004, "bw_mean": 2.80, "bw_std": 0.50, "mortality_7d": 0.200, "mortality_28d": 0.10,
-    },
-    "Spina bifida, unspecified": {
-        "freq": 0.003, "bw_mean": 2.70, "bw_std": 0.50, "mortality_7d": 0.200, "mortality_28d": 0.10,
-    },
+    # ── Fix case inconsistencies in categorical columns ──
+    # Mode of delivery
+    mode_map = {
+        "Spontaneous Vaginal Delivery": "Spontaneous Vaginal Delivery",
+        "spontaneous Vaginal Delivery": "Spontaneous Vaginal Delivery",
+        "Caesarean Section": "Caesarean Section",
+        "caesarean Section": "Caesarean Section",
+    }
+    df["Mode of Delivery"] = df["Mode of Delivery"].map(
+        lambda x: mode_map.get(x, x) if pd.notna(x) else x
+    )
+
+    # HIV status
+    hiv_map = {"TR": "TR", "TRR": "TRR", "Unknown": "Unknown", "unknown": "Unknown"}
+    df["HIV Status Code"] = df["HIV Status Code"].map(
+        lambda x: hiv_map.get(x, x) if pd.notna(x) else x
+    )
+
+    # How many babies
+    babies_map = {
+        "Singleton": "Singleton", "singleton": "Singleton",
+        "Twin": "Twin", "Triplet": "Triplet",
+    }
+    df["How many babies born"] = df["How many babies born"].map(
+        lambda x: babies_map.get(x, x) if pd.notna(x) else x
+    )
+
+    # Final diagnosis
+    diag_map = {
+        "bacterial Sepsis of newborn, unspecified": "Bacterial Sepsis of newborn, unspecified",
+        "neonatal Jaundice, unspecified": "Neonatal Jaundice, unspecified",
+        "other": "Other",
+    }
+    df["Final Diagnosis"] = df["Final Diagnosis"].replace(diag_map)
+
+    # Sex — drop invalid entries
+    df.loc[~df["Sex"].isin(["Male", "Female"]) & df["Sex"].notna(), "Sex"] = np.nan
+
+    # Birth weight → numeric
+    df["Birth Weight (Kg)"] = pd.to_numeric(df["Birth Weight (Kg)"], errors="coerce")
+
+    return df
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 2: Fit Gaussian Copula on core clinical variables
+# ══════════════════════════════════════════════════════════════
+
+# Variables modelled jointly by the copula
+COPULA_VARS = {
+    "Birth Weight (Kg)": "continuous",
+    "Mother's Age in years": "continuous",
+    "Final Diagnosis": "categorical",
+    "HIV Status Code": "categorical",
+    "Sex": "categorical",
+    "Mode of Delivery": "categorical",
+    "How many babies born": "categorical",
+    "Status at 7 Days - Outcome": "categorical",
+    "Status at 28 Days - Outcome": "categorical",
 }
 
-REASONS = {
-    "Bacterial Sepsis of newborn, unspecified": ["Fever", "Sepsis", "DIB", "Hypothermia"],
-    "Preterm - other (28 - <37 weeks)": ["Prematurity", "LBW", "Prematurity + LBW"],
-    "Other": ["DIB", "BA", "Convulsions", "Fever", "Other"],
-    "Preterm - extreme ( Less than 28 weeks by Ballard)": ["Prematurity", "Extreme Prematurity", "LBW"],
-    "Hypoxic ischemic encephalopathy [HIE], unspecified": ["BA", "Birth Asphyxia", "BA + Convulsions"],
-    "Neonatal Jaundice, unspecified": ["Jaundice", "Neonatal Jaundice"],
-    "Meconium aspiration syndrome": ["MAS", "DIB + MAS"],
-    "Well baby": ["Observation", "Mother unwell", "Well baby"],
-    "Respiratory distress syndrome (RDS)": ["DIB", "RDS", "Respiratory Distress"],
-    "Meningitis unspecified": ["Fever", "Convulsions", "Fever + Convulsions"],
-    "Gastroschisis": ["Gastroschisis", "Abdominal wall defect"],
-    "Low birth weight - Other (1000g - 2499g)": ["LBW", "Low birth weight"],
-    "Hydrocephalus, unspecified": ["Big head", "Hydrocephalus"],
-    "Spina bifida, unspecified": ["Spina bifida", "Neural tube defect"],
-}
 
-# ── Monthly admission distribution (Jul 2025 - Jan 2026) ──
-MONTHS = [
-    (datetime(2025, 7, 1), datetime(2025, 7, 31), 0.051),
-    (datetime(2025, 8, 1), datetime(2025, 8, 31), 0.170),
-    (datetime(2025, 9, 1), datetime(2025, 9, 30), 0.158),
-    (datetime(2025, 10, 1), datetime(2025, 10, 31), 0.172),
-    (datetime(2025, 11, 1), datetime(2025, 11, 30), 0.155),
-    (datetime(2025, 12, 1), datetime(2025, 12, 31), 0.169),
-    (datetime(2026, 1, 1), datetime(2026, 1, 22), 0.125),
-]
+def encode_for_copula(df):
+    """Integer-encode categoricals and return (numeric_df, encoding_maps)."""
+    # Work with complete-ish rows only (has an admission date)
+    complete = df[df["Date of Admission"].notna()].copy()
+
+    encodings = {}
+    for col, ctype in COPULA_VARS.items():
+        if ctype == "categorical":
+            # Treat NaN as an explicit category (preserves missingness pattern)
+            complete[col] = complete[col].fillna("_MISSING_")
+            cats = complete[col].value_counts().index.tolist()
+            to_code = {cat: i for i, cat in enumerate(cats)}
+            encodings[col] = {
+                "to_code": to_code,
+                "to_label": {v: k for k, v in to_code.items()},
+            }
+            complete[col] = complete[col].map(to_code).astype(float)
+
+    # Select only copula columns, drop remaining NaN (continuous cols)
+    copula_cols = list(COPULA_VARS.keys())
+    numeric = complete[copula_cols].dropna()
+    print(f"Copula fitted on {len(numeric)} complete rows × {len(copula_cols)} variables")
+
+    return numeric, encodings
 
 
-def random_date_in_range(start, end, n=1):
-    """Generate n random dates between start and end."""
-    delta = (end - start).days
-    return [start + timedelta(days=int(np.random.randint(0, delta + 1))) for _ in range(n)]
+def fit_copula(numeric_df):
+    """Fit GaussianMultivariate copula."""
+    model = GaussianMultivariate()
+    model.fit(numeric_df)
+    return model
 
 
-def random_time():
-    """Generate a random time (roughly uniform across 24h)."""
-    h = np.random.randint(0, 24)
-    m = np.random.randint(0, 60)
-    return f"{h:02d}:{m:02d}"
+def sample_and_decode(model, encodings, n):
+    """Sample from the fitted copula and decode categoricals."""
+    raw = model.sample(n)
+
+    for col, ctype in COPULA_VARS.items():
+        if ctype == "continuous":
+            # Clip to realistic ranges
+            if col == "Birth Weight (Kg)":
+                raw[col] = raw[col].clip(0.45, 6.0).round(3)
+            elif col == "Mother's Age in years":
+                raw[col] = raw[col].clip(14, 50).round(0).astype(int)
+        else:
+            n_cats = len(encodings[col]["to_code"])
+            raw[col] = (
+                raw[col].round().clip(0, n_cats - 1).astype(int)
+                .map(encodings[col]["to_label"])
+            )
+            # Restore NaN for "_MISSING_"
+            raw[col] = raw[col].replace("_MISSING_", np.nan)
+
+    return raw
 
 
-def generate_synthetic_data():
+# ══════════════════════════════════════════════════════════════
+# STEP 3: Learn auxiliary distributions from real data
+# ══════════════════════════════════════════════════════════════
+
+def learn_auxiliary(df):
+    """Learn conditional and marginal distributions for non-copula variables."""
+    complete = df[df["Date of Admission"].notna()].copy()
+    aux = {}
+
+    # ── Monthly admission volumes ──
+    complete["_adm_date"] = pd.to_datetime(complete["Date of Admission"], format="%d.%m.%y", errors="coerce")
+    complete["_month"] = complete["_adm_date"].dt.to_period("M")
+    month_counts = complete["_month"].value_counts().sort_index()
+    month_props = (month_counts / month_counts.sum()).to_dict()
+    aux["month_distribution"] = month_props
+
+    # Date ranges per month
+    month_ranges = {}
+    for m in month_counts.index:
+        dates_in_month = complete.loc[complete["_month"] == m, "_adm_date"]
+        month_ranges[m] = (dates_in_month.min(), dates_in_month.max())
+    aux["month_ranges"] = month_ranges
+
+    # ── Place of Birth distribution ──
+    pob = complete["Place of Birth"].dropna().value_counts(normalize=True)
+    aux["place_of_birth"] = pob.to_dict()
+
+    # ── Referral From conditional on Place of Birth ──
+    # In the real data, Place of Birth and Referral From are usually the same
+    both = complete[["Place of Birth", "Referral From"]].dropna()
+    same_pct = (both["Place of Birth"] == both["Referral From"]).mean()
+    aux["referral_same_as_pob"] = same_pct
+    # When different, learn the referral distribution
+    diff = both[both["Place of Birth"] != both["Referral From"]]
+    if len(diff) > 0:
+        aux["referral_when_different"] = diff["Referral From"].value_counts(normalize=True).to_dict()
+    else:
+        aux["referral_when_different"] = aux["place_of_birth"]
+
+    # ── District distribution ──
+    dist = complete["Address (District)"].dropna().value_counts(normalize=True)
+    aux["districts"] = dist.to_dict()
+
+    # ── Village distribution (per district, top villages) ──
+    village_by_district = {}
+    for d in dist.index:
+        vils = complete.loc[complete["Address (District)"] == d, "Address (Village)"].dropna()
+        if len(vils) > 0:
+            village_by_district[d] = vils.value_counts(normalize=True).to_dict()
+    aux["villages_by_district"] = village_by_district
+
+    # ── Reason for Admission conditional on Final Diagnosis ──
+    reason_by_diag = {}
+    for diag in complete["Final Diagnosis"].dropna().unique():
+        reasons = complete.loc[
+            complete["Final Diagnosis"] == diag, "Reason for Admission"
+        ].dropna()
+        if len(reasons) > 0:
+            reason_by_diag[diag] = reasons.value_counts(normalize=True).to_dict()
+    aux["reasons_by_diagnosis"] = reason_by_diag
+
+    # Overall reason distribution (fallback)
+    aux["reasons_overall"] = (
+        complete["Reason for Admission"].dropna().value_counts(normalize=True).to_dict()
+    )
+
+    # ── Missing data rate per column ──
+    n_complete = len(complete)
+    aux["missing_rates"] = {
+        "Address (District)": complete["Address (District)"].isna().mean(),
+        "Address (Village)": complete["Address (Village)"].isna().mean(),
+        "Reason for Admission": complete["Reason for Admission"].isna().mean(),
+    }
+
+    # ── Skeleton row proportion (rows with only IP No.) ──
+    skeleton = df[df["Date of Admission"].isna()]
+    aux["skeleton_proportion"] = len(skeleton) / len(df) if len(df) > 0 else 0.15
+
+    # ── Birth delay: days between birth and admission ──
+    complete["_birth_date"] = pd.to_datetime(complete["Date of Birth"], format="%d.%m.%y", errors="coerce")
+    delays = (complete["_adm_date"] - complete["_birth_date"]).dt.days.dropna()
+    delays = delays[(delays >= 0) & (delays < 60)]  # realistic range
+    aux["birth_delay_values"] = delays.values
+
+    # ── Outcome date delays ──
+    for status_col, date_col in [
+        ("Status at 7 Days - Outcome", "Status at 7 Days - Date"),
+        ("Status at 28 Days - Outcome", "Status at 28 Days - Date"),
+    ]:
+        has_outcome = complete[complete[status_col].notna()]
+        outcome_dates = pd.to_datetime(has_outcome[date_col], format="%d.%m.%y", errors="coerce")
+        outcome_delays = (outcome_dates - has_outcome["_adm_date"]).dt.days.dropna()
+        outcome_delays = outcome_delays[(outcome_delays >= 0) & (outcome_delays < 60)]
+        aux[f"{status_col}_delays"] = outcome_delays.values if len(outcome_delays) > 0 else np.array([3])
+
+    return aux
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 4: Assemble full synthetic dataset
+# ══════════════════════════════════════════════════════════════
+
+def _sample_from_dict(dist_dict, n=1):
+    """Sample n values from a {value: probability} dictionary."""
+    keys = list(dist_dict.keys())
+    probs = np.array(list(dist_dict.values()), dtype=float)
+    probs /= probs.sum()
+    return np.random.choice(keys, size=n, p=probs)
+
+
+def _random_time():
+    """Random time string HH:MM."""
+    return f"{np.random.randint(0, 24):02d}:{np.random.randint(0, 60):02d}"
+
+
+def assemble_synthetic(copula_samples, aux, n_total):
+    """Combine copula samples with auxiliary variables into full records."""
+
+    n_complete = len(copula_samples)
+    n_skeleton = n_total - n_complete
+
     rows = []
     ip_start = 36474
 
-    # Assign complete rows to months
-    month_assignments = []
-    for start, end, prop in MONTHS:
-        n_month = int(round(prop * N_COMPLETE))
-        month_assignments.extend([(start, end)] * n_month)
-    # Adjust to exactly N_COMPLETE
-    while len(month_assignments) < N_COMPLETE:
-        month_assignments.append((MONTHS[-1][0], MONTHS[-1][1]))
-    month_assignments = month_assignments[:N_COMPLETE]
-    np.random.shuffle(month_assignments)
+    # ── Assign months to each copula row ──
+    month_list = list(aux["month_distribution"].keys())
+    month_probs = np.array([aux["month_distribution"][m] for m in month_list])
+    month_probs /= month_probs.sum()
+    assigned_months = np.random.choice(month_list, size=n_complete, p=month_probs)
 
-    # Assign diagnoses
-    diag_names = list(DIAGNOSES.keys())
-    diag_probs = [DIAGNOSES[d]["freq"] for d in diag_names]
-    diag_probs = [p / sum(diag_probs) for p in diag_probs]  # normalize
-    assigned_diagnoses = np.random.choice(diag_names, size=N_COMPLETE, p=diag_probs)
+    for i in range(n_complete):
+        cs = copula_samples.iloc[i]
+        month = assigned_months[i]
+        m_start, m_end = aux["month_ranges"][month]
 
-    for i in range(N_COMPLETE):
-        ip_no = ip_start + i
-        month_start, month_end = month_assignments[i]
-        diagnosis = assigned_diagnoses[i]
-        diag_params = DIAGNOSES[diagnosis]
+        # Admission date — random within the month
+        delta = max((m_end - m_start).days, 1)
+        adm_date = m_start + timedelta(days=int(np.random.randint(0, delta + 1)))
 
-        # Date of admission (random within assigned month)
-        admission_date = random_date_in_range(month_start, month_end, 1)[0]
+        # Birth date — realistic delay before admission
+        if len(aux["birth_delay_values"]) > 0:
+            delay = int(np.random.choice(aux["birth_delay_values"]))
+        else:
+            delay = 0
+        birth_date = adm_date - timedelta(days=delay)
 
-        # Date of birth (usually same day or 0-3 days before admission)
-        birth_delay = np.random.choice([0, 0, 0, 0, 1, 1, 2, 3, 5, 10])
-        birth_date = admission_date - timedelta(days=int(birth_delay))
+        # Place of birth
+        pob = _sample_from_dict(aux["place_of_birth"])[0]
 
-        # Birth weight (from diagnosis-specific distribution, clipped)
-        bw = np.random.normal(diag_params["bw_mean"], diag_params["bw_std"])
-        bw = np.clip(bw, 0.55, 5.5)
-        bw = round(bw, 2)
-
-        # Sex
-        sex = np.random.choice(["Male", "Female"], p=[0.571, 0.429])
-
-        # Mother's age
-        age = int(np.clip(np.random.normal(25.5, 6.4), 15, 48))
-
-        # HIV status
-        hiv = np.random.choice(["TR", "Unknown", "TRR"], p=[0.52, 0.46, 0.02])
-
-        # Mode of delivery
-        mode = np.random.choice(
-            ["Spontaneous Vaginal Delivery", "Caesarean Section"],
-            p=[0.69, 0.31]
-        )
-
-        # How many babies
-        plurality = np.random.choice(
-            ["Singleton", "Twin", "Triplet"],
-            p=[0.85, 0.13, 0.02]
-        )
-        # Adjust weight for multiples
-        if plurality == "Twin":
-            bw = np.clip(bw * 0.75, 0.55, 4.0)
-            bw = round(bw, 2)
-        elif plurality == "Triplet":
-            bw = np.clip(bw * 0.60, 0.55, 3.5)
-            bw = round(bw, 2)
-
-        # Place of birth / referral (correlated)
-        place = np.random.choice(ALL_FACILITIES)
-        referral = place  # usually same
+        # Referral from (usually same as place of birth)
+        if np.random.random() < aux["referral_same_as_pob"]:
+            referral = pob
+        else:
+            referral = _sample_from_dict(aux["referral_when_different"])[0]
 
         # District
-        district = np.random.choice(district_names, p=district_probs)
-
-        # Village
-        village = np.random.choice(VILLAGES)
+        if np.random.random() < aux["missing_rates"]["Address (District)"]:
+            district = ""
+            village = ""
+        else:
+            district = _sample_from_dict(aux["districts"])[0]
+            # Village
+            if np.random.random() < aux["missing_rates"]["Address (Village)"]:
+                village = ""
+            elif district in aux["villages_by_district"]:
+                village = _sample_from_dict(aux["villages_by_district"][district])[0]
+            else:
+                village = ""
 
         # Reason for admission
-        reason = np.random.choice(REASONS.get(diagnosis, ["Unknown"]))
+        diagnosis = cs["Final Diagnosis"]
+        if np.random.random() < aux["missing_rates"]["Reason for Admission"]:
+            reason = ""
+        elif pd.notna(diagnosis) and diagnosis in aux["reasons_by_diagnosis"]:
+            reason = _sample_from_dict(aux["reasons_by_diagnosis"][diagnosis])[0]
+        elif aux["reasons_overall"]:
+            reason = _sample_from_dict(aux["reasons_overall"])[0]
+        else:
+            reason = ""
 
-        # Outcome assignment (mutually exclusive: 7-day OR 28-day OR neither)
-        outcome_phase = np.random.choice(["7d", "28d", "none"], p=[0.35, 0.35, 0.30])
+        # Outcome dates
+        s7_date = ""
+        if pd.notna(cs["Status at 7 Days - Outcome"]):
+            delays = aux["Status at 7 Days - Outcome_delays"]
+            d = int(np.random.choice(delays)) if len(delays) > 0 else 3
+            s7_date = (adm_date + timedelta(days=d)).strftime("%d.%m.%y")
 
-        s7_outcome, s7_date = "", ""
-        s28_outcome, s28_date = "", ""
-
-        if outcome_phase == "7d":
-            # 7-day outcome
-            died = np.random.random() < diag_params["mortality_7d"]
-            if died:
-                s7_outcome = "DD"
-            else:
-                s7_outcome = np.random.choice(["D", "S", "R"], p=[0.82, 0.15, 0.03])
-            days_to_outcome = int(np.clip(np.random.normal(3.4, 2.0), 0, 7))
-            s7_date = (admission_date + timedelta(days=days_to_outcome)).strftime("%d.%m.%y")
-        elif outcome_phase == "28d":
-            # 28-day outcome
-            died = np.random.random() < diag_params["mortality_28d"]
-            if died:
-                s28_outcome = "DD"
-            else:
-                s28_outcome = np.random.choice(["D", "S", "R"], p=[0.88, 0.08, 0.04])
-            days_to_outcome = int(np.clip(np.random.normal(8.4, 4.0), 1, 28))
-            s28_date = (admission_date + timedelta(days=days_to_outcome)).strftime("%d.%m.%y")
+        s28_date = ""
+        if pd.notna(cs["Status at 28 Days - Outcome"]):
+            delays = aux["Status at 28 Days - Outcome_delays"]
+            d = int(np.random.choice(delays)) if len(delays) > 0 else 10
+            s28_date = (adm_date + timedelta(days=d)).strftime("%d.%m.%y")
 
         rows.append({
-            "IP No.": ip_no,
+            "IP No.": ip_start + i,
             "Address (District)": district,
             "Address (Village)": village,
-            "Mother's Age in years": age,
-            "HIV Status Code": hiv,
-            "Sex": sex,
+            "Mother's Age in years": cs["Mother's Age in years"] if pd.notna(cs["Mother's Age in years"]) else "",
+            "HIV Status Code": cs["HIV Status Code"] if pd.notna(cs["HIV Status Code"]) else "",
+            "Sex": cs["Sex"] if pd.notna(cs["Sex"]) else "",
             "Date of Birth": birth_date.strftime("%d.%m.%y"),
-            "Time of Birth": random_time(),
-            "Place of Birth": place,
-            "Mode of Delivery": mode,
-            "Birth Weight (Kg)": bw,
-            "How many babies born": plurality,
+            "Time of Birth": _random_time(),
+            "Place of Birth": pob,
+            "Mode of Delivery": cs["Mode of Delivery"] if pd.notna(cs["Mode of Delivery"]) else "",
+            "Birth Weight (Kg)": cs["Birth Weight (Kg)"] if pd.notna(cs["Birth Weight (Kg)"]) else "",
+            "How many babies born": cs["How many babies born"] if pd.notna(cs["How many babies born"]) else "",
             "Source of warmth": "",
             "BCG ": "",
             "Polio": "",
-            "Date of Admission": admission_date.strftime("%d.%m.%y"),
-            "Time of Admission": random_time(),
+            "Date of Admission": adm_date.strftime("%d.%m.%y"),
+            "Time of Admission": _random_time(),
             "Reason for Admission": reason,
             "Blood Transfusion": "",
-            "Final Diagnosis": diagnosis,
+            "Final Diagnosis": cs["Final Diagnosis"] if pd.notna(cs["Final Diagnosis"]) else "",
             "Other Diagnosis": "",
             "Referral From": referral,
             "Discharge Weight (kg)": "",
-            "Status at 7 Days - Outcome": s7_outcome,
+            "Status at 7 Days - Outcome": cs["Status at 7 Days - Outcome"] if pd.notna(cs["Status at 7 Days - Outcome"]) else "",
             "Status at 7 Days - Date": s7_date,
-            "Status at 28 Days - Outcome": s28_outcome,
+            "Status at 28 Days - Outcome": cs["Status at 28 Days - Outcome"] if pd.notna(cs["Status at 28 Days - Outcome"]) else "",
             "Status at 28 Days - Date": s28_date,
             "Service Provider": "",
         })
 
-    # Add skeleton rows (empty except IP No.)
-    for i in range(N_SKELETON):
-        ip_no = ip_start + N_COMPLETE + i
+    # ── Skeleton rows (empty except IP No., matching real data proportion) ──
+    for i in range(n_skeleton):
         rows.append({
-            "IP No.": ip_no,
+            "IP No.": ip_start + n_complete + i,
             "Address (District)": "",
             "Address (Village)": "",
             "Mother's Age in years": "",
@@ -322,22 +427,94 @@ def generate_synthetic_data():
             "Service Provider": "",
         })
 
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows)
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 5: Validate synthetic vs real
+# ══════════════════════════════════════════════════════════════
+
+def validate(real_df, synth_df):
+    """Print comparative statistics for validation."""
+    real = real_df[real_df["Date of Admission"].notna()].copy()
+    synth = synth_df[synth_df["Date of Admission"] != ""].copy()
+
+    print("\n" + "=" * 60)
+    print("VALIDATION: Real vs Synthetic")
+    print("=" * 60)
+
+    print(f"\nRecord counts — Real: {len(real)}, Synthetic: {len(synth)}")
+
+    # Birth weight
+    real_bw = pd.to_numeric(real["Birth Weight (Kg)"], errors="coerce").dropna()
+    synth_bw = pd.to_numeric(synth["Birth Weight (Kg)"], errors="coerce").dropna()
+    print(f"\nBirth Weight (Kg):")
+    print(f"  Real  — mean={real_bw.mean():.3f}, std={real_bw.std():.3f}, median={real_bw.median():.3f}")
+    print(f"  Synth — mean={synth_bw.mean():.3f}, std={synth_bw.std():.3f}, median={synth_bw.median():.3f}")
+
+    # Mother's age
+    real_age = pd.to_numeric(real["Mother's Age in years"], errors="coerce").dropna()
+    synth_age = pd.to_numeric(synth["Mother's Age in years"], errors="coerce").dropna()
+    print(f"\nMother's Age:")
+    print(f"  Real  — mean={real_age.mean():.1f}, std={real_age.std():.1f}")
+    print(f"  Synth — mean={synth_age.mean():.1f}, std={synth_age.std():.1f}")
+
+    # Key categorical comparisons
+    for col in ["Final Diagnosis", "HIV Status Code", "Sex", "Mode of Delivery",
+                "How many babies born", "Status at 7 Days - Outcome", "Status at 28 Days - Outcome"]:
+        print(f"\n{col}:")
+        real_vc = real[col].fillna("_Missing_").value_counts(normalize=True).head(8)
+        synth_vc = synth[col].replace("", np.nan).fillna("_Missing_").value_counts(normalize=True).head(8)
+        combined = pd.DataFrame({"Real %": (real_vc * 100).round(1), "Synth %": (synth_vc * 100).round(1)})
+        print(combined.to_string())
+
+    # Mortality
+    real["_died"] = real["Status at 7 Days - Outcome"].isin(["DD"]) | real["Status at 28 Days - Outcome"].isin(["DD"])
+    synth["_died"] = synth["Status at 7 Days - Outcome"].isin(["DD"]) | synth["Status at 28 Days - Outcome"].isin(["DD"])
+    real_mort = real["_died"].mean() * 100
+    synth_mort = synth["_died"].mean() * 100
+    print(f"\nOverall mortality — Real: {real_mort:.1f}%, Synthetic: {synth_mort:.1f}%")
+
+
+# ══════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════
+
+def main():
+    # Check for real data
+    if not os.path.exists(REAL_DATA_PATH):
+        print(f"ERROR: Real data not found at {REAL_DATA_PATH}")
+        print(f"Please copy the real Logbook.csv to {REAL_DATA_PATH} first.")
+        sys.exit(1)
+
+    # Step 1: Load and clean
+    real_df = load_and_clean(REAL_DATA_PATH)
+
+    # Step 2: Encode and fit copula
+    numeric_df, encodings = encode_for_copula(real_df)
+    model = fit_copula(numeric_df)
+    print("Gaussian copula fitted successfully.")
+
+    # Step 3: Learn auxiliary distributions
+    aux = learn_auxiliary(real_df)
+
+    # Step 4: Sample from copula and assemble full dataset
+    n_skeleton = int(round(N_SYNTHETIC * aux["skeleton_proportion"]))
+    n_complete = N_SYNTHETIC - n_skeleton
+    print(f"\nGenerating {n_complete} complete + {n_skeleton} skeleton = {N_SYNTHETIC} total rows...")
+
+    copula_samples = sample_and_decode(model, encodings, n_complete)
+    synth_df = assemble_synthetic(copula_samples, aux, N_SYNTHETIC)
+
+    # Step 5: Save
+    synth_df.to_csv(OUTPUT_PATH, index=False, encoding="latin-1")
+    print(f"\nSynthetic data saved to {OUTPUT_PATH}")
+
+    # Step 6: Validate
+    validate(real_df, synth_df)
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":
-    df = generate_synthetic_data()
-    df.to_csv("data/Logbook.csv", index=False, encoding="latin-1")
-    print(f"Generated {len(df)} synthetic records")
-    print(f"  Complete rows: {N_COMPLETE}")
-    print(f"  Skeleton rows: {N_SKELETON}")
-
-    # Quick validation
-    complete = df[df["Date of Admission"] != ""]
-    print(f"  Admissions with dates: {len(complete)}")
-    deaths_7d = (complete["Status at 7 Days - Outcome"] == "DD").sum()
-    deaths_28d = (complete["Status at 28 Days - Outcome"] == "DD").sum()
-    print(f"  Deaths (7d): {deaths_7d}, Deaths (28d): {deaths_28d}")
-    print(f"  Total deaths: {deaths_7d + deaths_28d}")
-    print(f"  Mortality: {(deaths_7d + deaths_28d) / len(complete) * 100:.1f}%")
+    main()
