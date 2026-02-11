@@ -651,8 +651,9 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
     st.plotly_chart(fig_diag, use_container_width=True)
     figures_for_export[f"{section_prefix}Top10_Diagnoses"] = fig_diag
 
-    # Top 10 diagnoses — mortality rate table (excluding unknown outcomes)
-    top10_names = diag_tbl.head(10)["Final Diagnosis"].tolist()
+    # Top 10 diagnoses — mortality rate table (excluding unknown outcomes and unknown diagnoses)
+    top10_known = diag_tbl[diag_tbl["Final Diagnosis"] != "Unknown"].head(10)
+    top10_names = top10_known["Final Diagnosis"].tolist()
     top10_df = df[df["Final Diagnosis"].isin(top10_names)]
     top10_df = top10_df[top10_df["Combined_Outcome"] != "Unknown"]
     mort_by_diag = top10_df.groupby("Final Diagnosis").agg(
