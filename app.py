@@ -1021,13 +1021,16 @@ def main():
         )
     with dl_col2:
         if all_figures:
-            zip_data = generate_figures_zip(all_figures)
-            st.download_button(
-                label="⬇️  Download All Graphs (ZIP)",
-                data=zip_data,
-                file_name=f"Neonatal_Graphs_{'_'.join(selected_months) if len(selected_months) <= 3 else 'cumulative'}.zip",
-                mime="application/zip",
-            )
+            try:
+                zip_data = generate_figures_zip(all_figures)
+                st.download_button(
+                    label="⬇️  Download All Graphs (ZIP)",
+                    data=zip_data,
+                    file_name=f"Neonatal_Graphs_{'_'.join(selected_months) if len(selected_months) <= 3 else 'cumulative'}.zip",
+                    mime="application/zip",
+                )
+            except Exception as e:
+                st.warning("Graph export unavailable — PNG rendering engine not found on this server.")
 
     # ── Footer ──
     st.divider()
