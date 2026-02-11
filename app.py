@@ -496,16 +496,20 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
     tables_for_export[f"T{tc}_HIV"] = hiv_tbl
     tc += 1
     
-    # Visualization — pie chart
-    fig_hiv = go.Figure(go.Pie(
-        labels=hiv_tbl["HIV Status"],
-        values=hiv_tbl["n"],
-        marker=dict(colors=LANCET_COLORS[:len(hiv_tbl)]),
-        textinfo="label+percent",
-        textfont=dict(size=12, family=LANCET_FONT),
-        hole=0.3,
+    # Visualization — horizontal bar chart
+    hiv_viz = hiv_tbl.copy()
+    hiv_viz["n"] = hiv_viz["n"].astype(int)
+    hiv_viz = hiv_viz.sort_values("n", ascending=True)
+    fig_hiv = go.Figure(go.Bar(
+        y=hiv_viz["HIV Status"],
+        x=hiv_viz["n"],
+        orientation="h",
+        marker_color=LANCET_COLORS[0],
+        text=[f'{v} ({p})' for v, p in zip(hiv_viz["n"], hiv_viz["% of Total"])],
+        textposition="outside",
+        textfont=dict(size=11),
     ))
-    fig_hiv = lancet_plotly_layout(fig_hiv, title=f"Figure. {section_prefix}Maternal HIV status", height=380)
+    fig_hiv = lancet_plotly_layout(fig_hiv, title=f"Figure. {section_prefix}Maternal HIV status", xaxis_title="Number of Neonates", height=380)
     st.plotly_chart(fig_hiv, use_container_width=True)
     figures_for_export[f"{section_prefix}HIV_Status"] = fig_hiv
 
@@ -531,24 +535,37 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
     tables_for_export[f"T{tc}_Sex"] = sex_tbl
     tc += 1
     
-    # Visualization — side by side sex + delivery
+    # Visualization — side by side bar charts for sex + delivery
     col1, col2 = st.columns(2)
     with col1:
-        fig_sex = go.Figure(go.Pie(
-            labels=sex_tbl["Sex"], values=sex_tbl["n"],
-            marker=dict(colors=[LANCET_COLORS[0], LANCET_COLORS[1], LANCET_COLORS[7]]),
-            textinfo="label+percent", hole=0.3,
+        sex_viz = sex_tbl.copy()
+        sex_viz["n"] = sex_viz["n"].astype(int)
+        sex_colors = [LANCET_COLORS[0], LANCET_COLORS[1], LANCET_COLORS[7]]
+        fig_sex = go.Figure(go.Bar(
+            x=sex_viz["Sex"],
+            y=sex_viz["n"],
+            marker_color=sex_colors[:len(sex_viz)],
+            text=[f'{v} ({p})' for v, p in zip(sex_viz["n"], sex_viz["% of Total"])],
+            textposition="outside",
+            textfont=dict(size=11),
         ))
-        fig_sex = lancet_plotly_layout(fig_sex, title=f"Figure. {section_prefix}Sex distribution", height=350)
+        fig_sex = lancet_plotly_layout(fig_sex, title=f"Figure. {section_prefix}Sex distribution", xaxis_title="Sex", yaxis_title="Number of Neonates", height=350)
         st.plotly_chart(fig_sex, use_container_width=True)
         figures_for_export[f"{section_prefix}Sex_Distribution"] = fig_sex
     with col2:
-        fig_mod = go.Figure(go.Pie(
-            labels=mod_tbl["Mode of Delivery"], values=mod_tbl["n"],
-            marker=dict(colors=LANCET_COLORS[:len(mod_tbl)]),
-            textinfo="label+percent", hole=0.3,
+        mod_viz = mod_tbl.copy()
+        mod_viz["n"] = mod_viz["n"].astype(int)
+        mod_viz = mod_viz.sort_values("n", ascending=True)
+        fig_mod = go.Figure(go.Bar(
+            y=mod_viz["Mode of Delivery"],
+            x=mod_viz["n"],
+            orientation="h",
+            marker_color=LANCET_COLORS[0],
+            text=[f'{v} ({p})' for v, p in zip(mod_viz["n"], mod_viz["% of Total"])],
+            textposition="outside",
+            textfont=dict(size=11),
         ))
-        fig_mod = lancet_plotly_layout(fig_mod, title=f"Figure. {section_prefix}Mode of delivery", height=350)
+        fig_mod = lancet_plotly_layout(fig_mod, title=f"Figure. {section_prefix}Mode of delivery", xaxis_title="Number of Neonates", height=350)
         st.plotly_chart(fig_mod, use_container_width=True)
         figures_for_export[f"{section_prefix}Mode_of_Delivery"] = fig_mod
 
@@ -687,20 +704,27 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         tables_for_export[f"T{tc}_Status28d"] = s28_tbl
         tc += 1
     
-    # Outcome visualization
+    # Outcome visualization — horizontal bar chart with semantic colours
     outcome_colors = {
         "Discharged": LANCET_COLORS[2],
         "Died": LANCET_COLORS[1],
         "Self-Discharge / Runaway": LANCET_COLORS[9],
         "Referred Out": LANCET_COLORS[3],
+        "Transferred": LANCET_COLORS[4],
+        "Re-Admitted / Brought Back": LANCET_COLORS[5],
         "Unknown": LANCET_COLORS[7],
     }
-    fig_out = go.Figure(go.Pie(
-        labels=outcome_tbl["Hospital Outcome"],
-        values=outcome_tbl["n"],
-        marker=dict(colors=[outcome_colors.get(x, LANCET_COLORS[7]) for x in outcome_tbl["Hospital Outcome"]]),
-        textinfo="label+percent",
-        hole=0.35,
+    out_viz = outcome_tbl.copy()
+    out_viz["n"] = out_viz["n"].astype(int)
+    out_viz = out_viz.sort_values("n", ascending=True)
+    fig_out = go.Figure(go.Bar(
+        y=out_viz["Hospital Outcome"],
+        x=out_viz["n"],
+        orientation="h",
+        marker_color=[outcome_colors.get(x, LANCET_COLORS[7]) for x in out_viz["Hospital Outcome"]],
+        text=[f'{v} ({p})' for v, p in zip(out_viz["n"], out_viz["% of Total"])],
+        textposition="outside",
+        textfont=dict(size=11),
     ))
     fig_out = lancet_plotly_layout(fig_out, title=f"Figure. {section_prefix}Hospital outcome", height=400)
     st.plotly_chart(fig_out, use_container_width=True)
