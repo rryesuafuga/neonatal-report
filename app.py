@@ -484,7 +484,47 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
     ), unsafe_allow_html=True)
     tables_for_export[f"T{tc}_Top10_Referral"] = top10_ref
     tc += 1
-    
+
+    # Top 10 referral sources — mortality rate table
+    ref_names = top10_ref["Referral From"].tolist()
+    ref_df = df[df["Referral From"].fillna("Unknown").isin(ref_names)].copy()
+    ref_df["Referral From"] = ref_df["Referral From"].fillna("Unknown")
+    ref_total = ref_df.groupby("Referral From").size().reset_index(name="Total Referred")
+    ref_known = ref_df[ref_df["Combined_Outcome"] != "Unknown"]
+    ref_mort = ref_known.groupby("Referral From").agg(
+        Known_Outcome=("Died", "size"),
+        Deaths=("Died", "sum"),
+    ).reset_index()
+    ref_mortality = ref_total.merge(ref_mort, on="Referral From", how="left")
+    ref_mortality["Known_Outcome"] = ref_mortality["Known_Outcome"].fillna(0).astype(int)
+    ref_mortality["Deaths"] = ref_mortality["Deaths"].fillna(0).astype(int)
+    ref_mortality["Mortality_num"] = (
+        ref_mortality["Deaths"] / ref_mortality["Known_Outcome"].replace(0, float("nan")) * 100
+    ).round(1)
+    ref_mortality["Mortality (%)"] = ref_mortality["Mortality_num"].apply(
+        lambda x: f"{x}%" if not pd.isna(x) else "N/A"
+    )
+    ref_mortality = ref_mortality.sort_values("Mortality_num", ascending=False, na_position="last")
+    ref_mortality = ref_mortality.drop(columns="Mortality_num")
+    ref_mortality.columns = [
+        "Referral From", "Total Referred (n)",
+        "With Known Outcome (n)", "Deaths (n)", "Mortality (%)",
+    ]
+    rm_total_ref = ref_mortality["Total Referred (n)"].sum()
+    rm_total_known = ref_mortality["With Known Outcome (n)"].sum()
+    rm_total_deaths = ref_mortality["Deaths (n)"].sum()
+    rm_total_mort = (
+        f"{(rm_total_deaths / rm_total_known * 100):.1f}%" if rm_total_known > 0 else "N/A"
+    )
+    st.markdown(render_lancet_table(
+        ref_mortality,
+        title=f"{section_prefix}Mortality rate by top 10 referral sources",
+        footer_row=["Total (Top 10)", str(rm_total_ref), str(rm_total_known), str(rm_total_deaths), rm_total_mort],
+        table_num=tc,
+    ), unsafe_allow_html=True)
+    tables_for_export[f"T{tc}_Referral_Mortality"] = ref_mortality
+    tc += 1
+
     # ── 4. HIV Status ──
     st.markdown(f'<h4 class="report-section">{section_prefix}4. HIV Status</h4>', unsafe_allow_html=True)
     
