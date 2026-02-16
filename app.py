@@ -660,8 +660,9 @@ def generate_report_section(df, section_prefix="", table_counter_start=1):
         Total=("Died", "size"),
         Deaths=("Died", "sum"),
     ).reset_index()
-    mort_by_diag["Mortality (%)"] = (mort_by_diag["Deaths"] / mort_by_diag["Total"] * 100).round(1).astype(str) + "%"
-    mort_by_diag = mort_by_diag.sort_values("Deaths", ascending=False)
+    mort_by_diag["Mortality_num"] = (mort_by_diag["Deaths"] / mort_by_diag["Total"] * 100).round(1)
+    mort_by_diag["Mortality (%)"] = mort_by_diag["Mortality_num"].astype(str) + "%"
+    mort_by_diag = mort_by_diag.sort_values("Mortality_num", ascending=False).drop(columns="Mortality_num")
     mort_by_diag.columns = ["Final Diagnosis", "Total with Known Outcome (n)", "Deaths (n)", "Mortality (%)"]
     total_n = mort_by_diag["Total with Known Outcome (n)"].sum()
     total_d = mort_by_diag["Deaths (n)"].sum()
